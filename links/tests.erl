@@ -67,14 +67,23 @@ kill(RegName)->
 			exit(Pid, kill)
 	end.
 
+true_for_all_pids(Predicate, RegNames)->
+	lists:all(Predicate, [whereis(Child) || Child <- RegNames]).
+
+all_are_live(RegNames)->
+	true_for_all_pids(fun(Child) -> is_pid(Child) end, RegNames).
+
+all_are_dead(RegNames)->
+	true_for_all_pids(fun(Child) -> Child =:= undefined end, RegNames).
+
 get_exits(RegName)->
 	timer:sleep(300),
-	rpcc:call(RegName, get_exits).
+	rpcc:rpc(RegName, get_exits).
 
 test_system_process_gets_exit_signal()->
 	try
 		spawn_tree({a, [aa]}),
-		rpcc:call(a, {trap_exits, true}),
+		rpcc:rpc(a, {trap_exits, true}),
 		KillTarget = whereis(aa),
 		exit(KillTarget, exit),
 		Exits = get_exits(a),
@@ -87,7 +96,7 @@ test_system_process_gets_exit_signal()->
 test_system_process_gets_exit_signal_from_directly_linked_process_only()->
 	try
 		spawn_tree({a, [aa, ab, {ac, [ca, cb, cc]}, ad]}),
-		rpcc:call(a, {trap_exits, true}),
+		rpcc:rpc(a, {trap_exits, true}),
 		SubRoot = whereis(ac),
 		exit(whereis(cb), exit),
 		Exits = get_exits(a),
@@ -96,14 +105,40 @@ test_system_process_gets_exit_signal_from_directly_linked_process_only()->
 		kill(a)
 	end.
 
-test_linked_subtree_dies()->
+test_system_process_stops_exit_signals()->
 	try
 		spawn_tree({a, [aa, ab, {ac, [ca, cb, cc]}, ad]}),
-		rpcc:call(a, {trap_exits, true}),
+		rpcc:rpc(a, {trap_exits, true}),
 		exit(whereis(cb), exit),
-		lists:all(fun(Pid)-> Pid =:= undefined end, [whereis(Name) || Name <- [ac, ca, cb, cc]]),
-		lists:all(fun(Pid)-> is_pid(Pid) =:= true end, [whereis(Name) || Name <- [a, aa, ab, ad]])
+		timer:sleep(300),
+		true = all_are_dead([ac, ca, cb, cc]),
+		true = all_are_live([a, aa, ab, ad])
 	after
 		kill(a)
 	end.
 
+test_all_linked_tree_dies()->
+	try
+		spawn_tree({a, [aa, ab, {ac, [ca, cb, cc]}, ad]}),
+		timer:sleep(300),
+		exit(whereis(cb), exit),
+		timer:sleep(300),
+		true = all_are_dead([a, aa, ab, ad, ac, ca, cb, cc])
+	after
+		kill(a)
+	end.
+
+test_killed_parent_doesnt_kill_trapping_children()->
+	Children=[aa, ab, ac],
+	try
+		spawn_tree({a, Children}),
+		timer:sleep(300),
+		lists:foreach(fun(Child)-> rpcc:rpc(Child, {trap_exits, true}) end, Children),
+		rpcc:rpc(a, {trap_exits, true}),
+		exit(whereis(a), kill),
+		timer:sleep(300),
+		undefined = whereis(a),
+		true = all_are_live(Children)
+	after
+		lists:foreach(fun tests:kill/1, Children)	
+	end.
